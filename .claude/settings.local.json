@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(taskkill //F //IM \"Fabbit.exe\" 2>&1; taskkill //F //IM \"fabbit-file-agent.exe\" 2>&1; sleep 3 && cd C:/Users/azqaz/code/fabbit-file-agent && npx tauri build 2>&1 | tail -10)",
+      "WebSearch",
+      "Bash(cd C:/Users/azqaz/code/fabbit-file-agent && npx tauri build 2>&1 | tail -10)",
+      "Bash(start \"\" \"C:\\\\\\\\Users\\\\\\\\azqaz\\\\\\\\code\\\\\\\\fabbit-file-agent\\\\\\\\src-tauri\\\\\\\\target\\\\\\\\release\\\\\\\\bundle\\\\\\\\nsis\")"
+    ]
+  }
+}
