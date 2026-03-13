@@ -1,3 +1,0 @@
-[env]
-FABBIT_API_URL = "https://api.fabbit.io"
-FABBIT_RELEASES_URL = "https://releases.fabbit.io/latest.json"
