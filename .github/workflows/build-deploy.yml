@@ -1,0 +1,103 @@
+name: Build & Deploy
+
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+
+# 필요한 Secrets:
+#   CLOUDFLARE_ACCOUNT_ID  - Cloudflare 계정 ID
+#   CLOUDFLARE_API_TOKEN   - R2 읽기/쓰기 권한이 있는 API 토큰
+#   R2_BUCKET_NAME         - R2 버킷 이름 (예: fabbit-releases)
+#
+# 필요한 Variables:
+#   FABBIT_API_URL         - API 서버 URL (예: https://api.fabbit.io)
+#   FABBIT_RELEASES_URL    - 업데이트 체크 URL (예: https://releases.fabbit.io/latest.json)
+#   RELEASES_PUBLIC_URL    - R2 public URL (예: https://releases.fabbit.io)
+
+env:
+  FABBIT_API_URL: ${{ vars.FABBIT_API_URL || 'https://api.fabbit.io' }}
+  FABBIT_RELEASES_URL: ${{ vars.FABBIT_RELEASES_URL || 'https://releases.fabbit.io/latest.json' }}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      installer: ${{ steps.version.outputs.installer }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(grep -oP '"version": "\K[^"]+' src-tauri/tauri.conf.json)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "installer=Fabbit_${VERSION}_x64-setup.exe" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: src-tauri/target/release/bundle/nsis/*.exe
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: installer
+          path: dist
+
+      - name: Generate latest.json
+        shell: bash
+        run: |
+          VERSION="${{ needs.build.outputs.version }}"
+          INSTALLER="${{ needs.build.outputs.installer }}"
+          RELEASES_URL="${{ vars.RELEASES_PUBLIC_URL || 'https://releases.fabbit.io' }}"
+          SHA256=$(sha256sum "dist/$INSTALLER" | cut -d ' ' -f 1)
+
+          cat > dist/latest.json << EOF
+          {
+            "version": "$VERSION",
+            "mandatory": false,
+            "min_version": "0.1.0",
+            "download_url": "$RELEASES_URL/$INSTALLER",
+            "sha256": "$SHA256",
+            "release_notes": ""
+          }
+          EOF
+
+      - name: Upload to R2
+        uses: ryand56/r2-upload-action@latest
+        with:
+          r2-account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ secrets.R2_BUCKET_NAME }}
+          source-dir: dist
+          destination-dir: ./

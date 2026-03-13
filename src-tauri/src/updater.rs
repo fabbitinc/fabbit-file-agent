@@ -2,6 +2,10 @@ use std::time::Duration;
 use tauri::Emitter;
 use tauri_plugin_notification::NotificationExt;
 
+const RELEASES_URL: &str = match option_env!("FABBIT_RELEASES_URL") {
+    Some(v) => v,
+    None => "https://releases.fabbit.io/latest.json",
+};
 const CHECK_INTERVAL_SECS: u64 = 60 * 60; // 1시간마다 확인
 const INITIAL_DELAY_SECS: u64 = 3;
 
@@ -15,9 +19,8 @@ pub struct UpdateInfo {
     pub release_notes: String,
 }
 
+#[cfg(feature = "mock")]
 pub fn check() -> UpdateInfo {
-    // TODO: 실제 구현 시 GET https://releases.fabbit.io/latest.json
-    // mock - 로컬 installer 경로 사용
     let current = env!("CARGO_PKG_VERSION").to_string();
     let latest = "0.2.0".to_string();
     let update_available = latest != current;
@@ -32,9 +35,23 @@ pub fn check() -> UpdateInfo {
         current_version: current,
         latest_version: latest,
         update_available,
-        mandatory: false, // true로 변경하면 강제 업데이트 테스트
+        mandatory: false,
         download_url: installer_path.to_string_lossy().to_string(),
         release_notes: "새 기능: 파일 자동 업로드, 버그 수정".to_string(),
+    }
+}
+
+#[cfg(not(feature = "mock"))]
+pub fn check() -> UpdateInfo {
+    // TODO: GET https://releases.fabbit.io/latest.json
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    UpdateInfo {
+        current_version: current.clone(),
+        latest_version: current,
+        update_available: false,
+        mandatory: false,
+        download_url: String::new(),
+        release_notes: String::new(),
     }
 }
 

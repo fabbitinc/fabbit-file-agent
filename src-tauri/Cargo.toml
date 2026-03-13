@@ -29,7 +29,10 @@ notify-debouncer-mini = "0.5"
 dirs = "6"
 open = "5"
 tauri-plugin-single-instance = "2.4.0"
-tauri-plugin-updater = "2.10.0"
+
+[features]
+default = []
+mock = []
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

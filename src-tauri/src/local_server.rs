@@ -1,8 +1,12 @@
-use std::io::Read as _;
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "mock")]
 use tauri::Emitter;
 use tiny_http::{Header, Response, Server};
 
+const API_URL: &str = match option_env!("FABBIT_API_URL") {
+    Some(v) => v,
+    None => "https://api.fabbit.io",
+};
 const DEFAULT_PORT: u16 = 52847;
 const ALLOWED_ORIGINS: &[&str] = &["https://fabbit.io", "http://localhost:3000"];
 
@@ -137,11 +141,17 @@ fn handle_auth_callback(
         return (400, json_response("error", "Missing code parameter"));
     };
 
-    // TODO: 실제 구현 시 code를 API 서버에 보내서 토큰 교환
-    // POST https://api.fabbit.io/oauth/token { code, client_id: "fabbit-agent" }
-    // 지금은 mock
     println!("Auth callback received code: {}", code);
 
+    exchange_token(code, auth_state, app)
+}
+
+#[cfg(feature = "mock")]
+fn exchange_token(
+    code: String,
+    auth_state: &SharedAuthState,
+    app: &tauri::AppHandle,
+) -> (i32, String) {
     let mut state = auth_state.lock().unwrap();
     state.logged_in = true;
     state.username = "홍길동".to_string();
@@ -152,10 +162,17 @@ fn handle_auth_callback(
         "user": &state.username,
     }));
 
-    (
-        200,
-        json_response("success", "로그인 완료. 이 창을 닫아도 됩니다."),
-    )
+    (200, json_response("success", "로그인 완료. 이 창을 닫아도 됩니다."))
+}
+
+#[cfg(not(feature = "mock"))]
+fn exchange_token(
+    _code: String,
+    _auth_state: &SharedAuthState,
+    _app: &tauri::AppHandle,
+) -> (i32, String) {
+    // TODO: POST https://api.fabbit.io/oauth/token { code, client_id: "fabbit-agent" }
+    (501, json_response("error", "Not implemented"))
 }
 
 // POST /download { "fileId": "abc123" }
@@ -178,19 +195,22 @@ fn handle_download(
         return (400, json_response("error", "Missing fileId"));
     };
 
-    // TODO: 실제 구현 시 access_token으로 API 서버에서 파일 다운로드
-    // GET https://api.fabbit.io/files/{fileId} Authorization: Bearer {access_token}
-    // 지금은 mock - 더미 파일 생성
+    download_file(&file_id, app)
+}
+
+#[cfg(feature = "mock")]
+fn download_file(
+    file_id: &str,
+    app: &tauri::AppHandle,
+) -> (i32, String) {
     let folder = crate::shell_folder::target_folder();
-    let file_name = format!("{}.txt", file_id);
-    let file_path = folder.join(&file_name);
+    let file_path = folder.join(format!("{}.txt", file_id));
 
     let mock_content = format!(
         "Fabbit 파일 (ID: {})\n다운로드 시각: {:?}\n\n이 파일을 수정한 후 업로드하세요.",
         file_id,
         std::time::SystemTime::now()
     );
-
     if let Err(e) = std::fs::write(&file_path, &mock_content) {
         return (500, json_response("error", &format!("File write failed: {}", e)));
     }
@@ -209,6 +229,15 @@ fn handle_download(
         })
         .to_string(),
     )
+}
+
+#[cfg(not(feature = "mock"))]
+fn download_file(
+    _file_id: &str,
+    _app: &tauri::AppHandle,
+) -> (i32, String) {
+    // TODO: GET https://api.fabbit.io/files/{fileId} Authorization: Bearer {access_token}
+    (501, json_response("error", "Not implemented"))
 }
 
 // GET /update/check

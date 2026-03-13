@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "dev": "tauri dev",
+    "dev-mock": "tauri dev --features mock",
+    "build": "tauri build",
     "tauri": "tauri"
   },
   "devDependencies": {
