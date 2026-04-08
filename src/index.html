@@ -9,7 +9,7 @@
   </head>
 
   <body>
-    <div id="mandatory-update-overlay" style="display:none;">
+    <div id="mandatory-update-overlay" style="display: none">
       <div class="update-dialog">
         <h2>필수 업데이트</h2>
         <p id="update-message">보안 업데이트가 필요합니다.</p>
@@ -20,15 +20,148 @@
       </div>
     </div>
 
-    <main class="container">
-      <h1>Fabbit</h1>
-      <p>Hello World!</p>
+    <main class="app-shell">
+      <section class="hero card">
+        <div>
+          <p class="eyebrow">Fabbit File Agent</p>
+          <h1>Inventor IPJ 가져오기</h1>
+          <p class="hero-copy">
+            IPJ 파일이 포함된 Inventor 프로젝트 폴더를 선택하면 workspace를 스캔해
+            매니페스트를 만들고 순차 업로드합니다.
+          </p>
+        </div>
+        <span id="status-badge" class="status-badge status-idle">대기 중</span>
+      </section>
 
-      <form class="row" id="greet-form">
-        <input id="greet-input" placeholder="이름을 입력하세요..." />
-        <button type="submit">인사하기</button>
-      </form>
-      <p id="greet-msg"></p>
+      <section class="card workspace-card">
+        <div class="controls-header">
+          <div>
+            <h2>작업 폴더</h2>
+            <p class="muted">
+              다운로드, 파일 감시, 트레이의 폴더 열기는 이 경로를 기준으로 동작합니다.
+            </p>
+          </div>
+          <div class="button-row">
+            <button id="open-working-folder-btn" class="secondary-btn">폴더 열기</button>
+            <button id="select-working-folder-btn" class="primary-btn">작업 폴더 선택</button>
+          </div>
+        </div>
+        <div class="path-block">
+          <span class="label">현재 작업 폴더</span>
+          <code id="working-folder-path">불러오는 중...</code>
+        </div>
+      </section>
+
+      <section class="card controls-card">
+        <div class="controls-header">
+          <div>
+            <h2>1. 프로젝트 폴더 선택</h2>
+            <p class="muted">1차 버전은 단일 IPJ 파일이 포함된 폴더만 지원합니다.</p>
+          </div>
+          <button id="select-folder-btn" class="primary-btn">IPJ 폴더 선택</button>
+        </div>
+        <div class="path-block">
+          <span class="label">선택한 폴더</span>
+          <code id="selected-root">아직 선택되지 않음</code>
+        </div>
+        <p id="login-hint" class="hint">
+          업로드를 시작하려면 트레이 메뉴에서 먼저 로그인해야 합니다.
+        </p>
+      </section>
+
+      <section id="error-panel" class="card message-card error" hidden>
+        <h2>오류</h2>
+        <p id="error-message"></p>
+      </section>
+
+      <section class="card summary-card">
+        <div class="section-header">
+          <div>
+            <h2>2. 분석 결과</h2>
+            <p class="muted">IPJ 정보와 workspace 스캔 결과를 미리 확인합니다.</p>
+          </div>
+        </div>
+
+        <div class="summary-grid">
+          <div class="summary-item">
+            <span class="label">프로젝트 이름</span>
+            <strong id="project-name">-</strong>
+          </div>
+          <div class="summary-item">
+            <span class="label">프로젝트 타입</span>
+            <strong id="project-type">-</strong>
+          </div>
+          <div class="summary-item wide">
+            <span class="label">IPJ 경로</span>
+            <code id="ipj-path">-</code>
+          </div>
+          <div class="summary-item wide">
+            <span class="label">Workspace 경로</span>
+            <code id="workspace-path">-</code>
+          </div>
+          <div class="summary-item">
+            <span class="label">Inventor 버전</span>
+            <strong id="inventor-version">확인 전</strong>
+          </div>
+          <div class="summary-item">
+            <span class="label">총 파일 수</span>
+            <strong id="total-files">0개</strong>
+          </div>
+          <div class="summary-item">
+            <span class="label">총 용량</span>
+            <strong id="total-bytes">0 B</strong>
+          </div>
+        </div>
+
+        <div class="file-count-grid">
+          <div class="count-card">
+            <span class="label">PART</span>
+            <strong id="part-count">0</strong>
+          </div>
+          <div class="count-card">
+            <span class="label">ASSEMBLY</span>
+            <strong id="assembly-count">0</strong>
+          </div>
+          <div class="count-card">
+            <span class="label">DRAWING</span>
+            <strong id="drawing-count">0</strong>
+          </div>
+          <div class="count-card">
+            <span class="label">ATTACHMENT</span>
+            <strong id="attachment-count">0</strong>
+          </div>
+        </div>
+
+        <div class="warnings-block">
+          <div class="section-header compact">
+            <h3>경고 및 참고사항</h3>
+          </div>
+          <ul id="warnings-list" class="warnings-list">
+            <li>아직 분석 결과가 없습니다.</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="card upload-card">
+        <div class="controls-header">
+          <div>
+            <h2>3. 업로드</h2>
+            <p class="muted">매니페스트를 먼저 전송한 뒤 파일을 순차 업로드합니다.</p>
+          </div>
+          <button id="upload-btn" class="primary-btn" disabled>업로드 시작</button>
+        </div>
+
+        <div class="progress-block">
+          <div class="progress-meta">
+            <span id="progress-label">업로드 대기 중</span>
+            <span id="progress-count">0 / 0 파일</span>
+          </div>
+          <div class="progress-track">
+            <div id="progress-fill" class="progress-fill"></div>
+          </div>
+          <p id="current-file" class="hint">현재 업로드 중인 파일이 없습니다.</p>
+        </div>
+      </section>
     </main>
   </body>
 </html>

@@ -4,13 +4,41 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::Emitter;
 
+#[derive(Default)]
+pub struct WatchController {
+    stop_tx: Option<std::sync::mpsc::Sender<()>>,
+    current_path: Option<PathBuf>,
+}
+
+pub type SharedWatchController = Arc<Mutex<WatchController>>;
+
 #[derive(Clone, serde::Serialize)]
 struct PendingFiles {
     count: usize,
     files: Vec<String>,
 }
 
-pub fn start_watching(app_handle: tauri::AppHandle, watch_path: PathBuf) {
+pub fn update_watch_path(
+    app_handle: tauri::AppHandle,
+    watch_state: SharedWatchController,
+    watch_path: PathBuf,
+) -> Result<(), String> {
+    std::fs::create_dir_all(&watch_path).map_err(|e| e.to_string())?;
+
+    let mut state = watch_state.lock().unwrap();
+    if state.current_path.as_ref() == Some(&watch_path) {
+        return Ok(());
+    }
+
+    if let Some(stop_tx) = state.stop_tx.take() {
+        let _ = stop_tx.send(());
+    }
+
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+    state.stop_tx = Some(stop_tx);
+    state.current_path = Some(watch_path.clone());
+    drop(state);
+
     let pending: Arc<Mutex<std::collections::HashSet<PathBuf>>> =
         Arc::new(Mutex::new(std::collections::HashSet::new()));
 
@@ -20,8 +48,8 @@ pub fn start_watching(app_handle: tauri::AppHandle, watch_path: PathBuf) {
     std::thread::spawn(move || {
         let (tx, rx) = std::sync::mpsc::channel();
 
-        let mut debouncer = new_debouncer(Duration::from_secs(2), tx)
-            .expect("Failed to create file watcher");
+        let mut debouncer =
+            new_debouncer(Duration::from_secs(2), tx).expect("Failed to create file watcher");
 
         debouncer
             .watcher()
@@ -29,7 +57,11 @@ pub fn start_watching(app_handle: tauri::AppHandle, watch_path: PathBuf) {
             .expect("Failed to watch directory");
 
         loop {
-            match rx.recv() {
+            if stop_rx.try_recv().is_ok() {
+                break;
+            }
+
+            match rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(Ok(events)) => {
                     let mut pending = pending_clone.lock().unwrap();
                     for event in events {
@@ -50,10 +82,7 @@ pub fn start_watching(app_handle: tauri::AppHandle, watch_path: PathBuf) {
                     if !pending.is_empty() {
                         let payload = PendingFiles {
                             count: pending.len(),
-                            files: pending
-                                .iter()
-                                .map(|p| p.display().to_string())
-                                .collect(),
+                            files: pending.iter().map(|p| p.display().to_string()).collect(),
                         };
                         let _ = app.emit("files-pending-upload", &payload);
                     }
@@ -61,8 +90,11 @@ pub fn start_watching(app_handle: tauri::AppHandle, watch_path: PathBuf) {
                 Ok(Err(e)) => {
                     eprintln!("File watch error: {:?}", e);
                 }
-                Err(_) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
     });
+
+    Ok(())
 }

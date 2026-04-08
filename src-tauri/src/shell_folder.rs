@@ -117,29 +117,145 @@ mod platform {
 pub use platform::*;
 
 #[cfg(not(target_os = "windows"))]
-pub fn target_folder() -> std::path::PathBuf {
-    dirs::home_dir()
-        .expect("Failed to get home directory")
-        .join("Fabbit")
+mod platform {
+    use serde::{Deserialize, Serialize};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+    use tauri::{AppHandle, Manager};
+
+    const APP_CONFIG_DIR: &str = "com.moseoh.fabbit-file-agent";
+    const TARGET_FOLDER_CONFIG: &str = "target-folder.json";
+
+    #[derive(Default, Serialize, Deserialize)]
+    struct TargetFolderConfig {
+        target_folder: Option<String>,
+    }
+
+    fn default_target_folder() -> PathBuf {
+        dirs::home_dir()
+            .expect("Failed to get home directory")
+            .join("Fabbit")
+    }
+
+    fn fallback_config_dir() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| default_target_folder().join(".config"))
+            .join(APP_CONFIG_DIR)
+    }
+
+    fn config_file_path(app: Option<&AppHandle>) -> PathBuf {
+        let config_dir = app
+            .and_then(|handle| handle.path().app_config_dir().ok())
+            .unwrap_or_else(fallback_config_dir);
+        config_dir.join(TARGET_FOLDER_CONFIG)
+    }
+
+    fn normalize_target_folder(path: &Path) -> PathBuf {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| default_target_folder())
+                .join(path)
+        };
+
+        absolute.components().collect::<PathBuf>()
+    }
+
+    fn load_config(path: &Path) -> Option<TargetFolderConfig> {
+        let content = fs::read_to_string(path).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    fn read_saved_target_folder(app: Option<&AppHandle>) -> Option<PathBuf> {
+        let path = config_file_path(app);
+        let config = load_config(&path)?;
+        let folder = config.target_folder?;
+        if folder.trim().is_empty() {
+            return None;
+        }
+
+        Some(normalize_target_folder(Path::new(&folder)))
+    }
+
+    fn write_config(
+        path: &Path,
+        config: &TargetFolderConfig,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let content = serde_json::to_string_pretty(config)?;
+        fs::write(path, content)?;
+        Ok(())
+    }
+
+    pub fn target_folder() -> PathBuf {
+        read_saved_target_folder(None).unwrap_or_else(default_target_folder)
+    }
+
+    pub fn runtime_target_folder(app: &AppHandle) -> PathBuf {
+        read_saved_target_folder(Some(app)).unwrap_or_else(default_target_folder)
+    }
+
+    pub fn set_target_folder(
+        app: &AppHandle,
+        target_folder: &Path,
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let normalized = normalize_target_folder(target_folder);
+        fs::create_dir_all(&normalized)?;
+
+        let config = TargetFolderConfig {
+            target_folder: Some(normalized.to_string_lossy().into_owned()),
+        };
+        write_config(&config_file_path(Some(app)), &config)?;
+
+        Ok(normalized)
+    }
+
+    pub fn register(_icon_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        fs::create_dir_all(target_folder())?;
+        Ok(())
+    }
+
+    pub fn unregister() -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    pub fn is_registered() -> bool {
+        false
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn register(_icon_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(target_folder())?;
+pub use platform::*;
+
+#[cfg(target_os = "windows")]
+pub fn runtime_target_folder(_app: &tauri::AppHandle) -> std::path::PathBuf {
+    target_folder()
+}
+
+#[cfg(target_os = "windows")]
+pub fn set_target_folder(
+    _app: &tauri::AppHandle,
+    _target_folder: &std::path::Path,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    Ok(target_folder())
+}
+
+#[cfg(target_os = "windows")]
+pub fn open_target_folder(_app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    std::process::Command::new("explorer")
+        .arg(shell_uri())
+        .spawn()?;
     Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn unregister() -> Result<(), Box<dyn std::error::Error>> {
+pub fn open_target_folder(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    open::that(runtime_target_folder(app))?;
     Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn is_registered() -> bool {
-    false
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn shell_uri() -> String {
-    target_folder().to_string_lossy().to_string()
 }

@@ -1,30 +1,22 @@
+#[cfg(not(feature = "mock"))]
+use reqwest::blocking::Client;
 use std::sync::{Arc, Mutex};
-#[cfg(feature = "mock")]
 use tauri::Emitter;
 use tiny_http::{Header, Response, Server};
 
-const API_URL: &str = match option_env!("FABBIT_API_URL") {
+#[cfg(not(feature = "mock"))]
+pub const API_URL: &str = match option_env!("FABBIT_API_URL") {
     Some(v) => v,
     None => "https://api.fabbit.io",
 };
 const DEFAULT_PORT: u16 = 52847;
 const ALLOWED_ORIGINS: &[&str] = &["https://fabbit.io", "http://localhost:3000"];
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AuthState {
     pub logged_in: bool,
     pub username: String,
     pub access_token: Option<String>,
-}
-
-impl Default for AuthState {
-    fn default() -> Self {
-        Self {
-            logged_in: false,
-            username: String::new(),
-            access_token: None,
-        }
-    }
 }
 
 pub type SharedAuthState = Arc<Mutex<AuthState>>;
@@ -76,9 +68,7 @@ pub fn start(app_handle: tauri::AppHandle, auth_state: SharedAuthState) -> u16 {
 
             let mut response = Response::from_string(&body)
                 .with_status_code(status)
-                .with_header(
-                    Header::from_bytes("Content-Type", "application/json").unwrap(),
-                );
+                .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
             for h in &cors_headers {
                 response.add_header(h.clone());
             }
@@ -128,14 +118,11 @@ fn handle_auth_callback(
     auth_state: &SharedAuthState,
     app: &tauri::AppHandle,
 ) -> (i32, String) {
-    let code = path
-        .split('?')
-        .nth(1)
-        .and_then(|q| {
-            q.split('&')
-                .find(|p| p.starts_with("code="))
-                .map(|p| p.trim_start_matches("code=").to_string())
-        });
+    let code = path.split('?').nth(1).and_then(|q| {
+        q.split('&')
+            .find(|p| p.starts_with("code="))
+            .map(|p| p.trim_start_matches("code=").to_string())
+    });
 
     let Some(code) = code else {
         return (400, json_response("error", "Missing code parameter"));
@@ -157,22 +144,123 @@ fn exchange_token(
     state.username = "홍길동".to_string();
     state.access_token = Some(format!("mock_access_token_{}", code));
 
-    let _ = app.emit("auth-changed", serde_json::json!({
-        "loggedIn": true,
-        "user": &state.username,
-    }));
+    let _ = app.emit(
+        "auth-changed",
+        serde_json::json!({
+            "loggedIn": true,
+            "user": &state.username,
+        }),
+    );
 
-    (200, json_response("success", "로그인 완료. 이 창을 닫아도 됩니다."))
+    (
+        200,
+        json_response("success", "로그인 완료. 이 창을 닫아도 됩니다."),
+    )
 }
 
 #[cfg(not(feature = "mock"))]
 fn exchange_token(
-    _code: String,
-    _auth_state: &SharedAuthState,
-    _app: &tauri::AppHandle,
+    code: String,
+    auth_state: &SharedAuthState,
+    app: &tauri::AppHandle,
 ) -> (i32, String) {
-    // TODO: POST https://api.fabbit.io/oauth/token { code, client_id: "fabbit-agent" }
-    (501, json_response("error", "Not implemented"))
+    let client = match Client::builder().build() {
+        Ok(client) => client,
+        Err(error) => {
+            return (
+                500,
+                json_response(
+                    "error",
+                    &format!("HTTP 클라이언트를 초기화하지 못했습니다: {error}"),
+                ),
+            )
+        }
+    };
+
+    let response = match client
+        .post(format!("{API_URL}/oauth/token"))
+        .json(&serde_json::json!({
+            "code": code,
+            "client_id": "fabbit-agent",
+        }))
+        .send()
+    {
+        Ok(response) => response,
+        Err(error) => {
+            return (
+                502,
+                json_response("error", &format!("토큰 교환 요청에 실패했습니다: {error}")),
+            )
+        }
+    };
+
+    let status = response.status();
+    let body = match response.text() {
+        Ok(body) => body,
+        Err(error) => {
+            return (
+                502,
+                json_response("error", &format!("토큰 응답을 읽지 못했습니다: {error}")),
+            )
+        }
+    };
+
+    if !status.is_success() {
+        return (
+            status.as_u16() as i32,
+            json_response("error", &format!("토큰 교환이 실패했습니다: {body}")),
+        );
+    }
+
+    let parsed: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return (
+                502,
+                json_response(
+                    "error",
+                    &format!("토큰 응답 JSON 파싱에 실패했습니다: {error}"),
+                ),
+            )
+        }
+    };
+
+    let access_token = parsed
+        .get("access_token")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+
+    let Some(access_token) = access_token else {
+        return (
+            502,
+            json_response("error", "토큰 응답에 access_token이 없습니다."),
+        );
+    };
+
+    let username = parsed
+        .get("user")
+        .and_then(|user| user.get("name").or_else(|| user.get("username")))
+        .and_then(|value| value.as_str())
+        .unwrap_or("로그인됨")
+        .to_string();
+
+    let mut state = auth_state.lock().unwrap();
+    state.logged_in = true;
+    state.username = username.clone();
+    state.access_token = Some(access_token);
+
+    let _ = app.emit(
+        "auth-changed",
+        serde_json::json!({
+            "loggedIn": true,
+            "user": username,
+        }),
+    );
+
+    (
+        200,
+        json_response("success", "로그인 완료. 이 창을 닫아도 됩니다."),
+    )
 }
 
 // POST /download { "fileId": "abc123" }
@@ -199,11 +287,8 @@ fn handle_download(
 }
 
 #[cfg(feature = "mock")]
-fn download_file(
-    file_id: &str,
-    app: &tauri::AppHandle,
-) -> (i32, String) {
-    let folder = crate::shell_folder::target_folder();
+fn download_file(file_id: &str, app: &tauri::AppHandle) -> (i32, String) {
+    let folder = crate::shell_folder::runtime_target_folder(app);
     let file_path = folder.join(format!("{}.txt", file_id));
 
     let mock_content = format!(
@@ -212,13 +297,19 @@ fn download_file(
         std::time::SystemTime::now()
     );
     if let Err(e) = std::fs::write(&file_path, &mock_content) {
-        return (500, json_response("error", &format!("File write failed: {}", e)));
+        return (
+            500,
+            json_response("error", &format!("File write failed: {}", e)),
+        );
     }
 
-    let _ = app.emit("file-downloaded", serde_json::json!({
-        "fileId": file_id,
-        "path": file_path.to_string_lossy(),
-    }));
+    let _ = app.emit(
+        "file-downloaded",
+        serde_json::json!({
+            "fileId": file_id,
+            "path": file_path.to_string_lossy(),
+        }),
+    );
 
     (
         200,
@@ -232,10 +323,7 @@ fn download_file(
 }
 
 #[cfg(not(feature = "mock"))]
-fn download_file(
-    _file_id: &str,
-    _app: &tauri::AppHandle,
-) -> (i32, String) {
+fn download_file(_file_id: &str, _app: &tauri::AppHandle) -> (i32, String) {
     // TODO: GET https://api.fabbit.io/files/{fileId} Authorization: Bearer {access_token}
     (501, json_response("error", "Not implemented"))
 }
@@ -258,17 +346,13 @@ fn handle_update_check() -> (i32, String) {
 fn handle_upload_status(app: &tauri::AppHandle) -> (i32, String) {
     // file_watcher에서 pending 파일 목록을 가져와야 하지만
     // 지금은 Fabbit 폴더 내 파일 목록을 반환
-    let folder = crate::shell_folder::target_folder();
+    let folder = crate::shell_folder::runtime_target_folder(app);
     let files: Vec<String> = std::fs::read_dir(&folder)
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
                 .filter(|e| e.path().is_file())
-                .filter(|e| {
-                    !e.file_name()
-                        .to_string_lossy()
-                        .starts_with('.')
-                })
+                .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
                 .map(|e| e.file_name().to_string_lossy().to_string())
                 .collect()
         })

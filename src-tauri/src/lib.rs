@@ -1,15 +1,18 @@
 mod autostart;
 mod file_watcher;
+mod ipj_import;
 mod local_server;
 mod shell_folder;
 mod updater;
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{
-    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
     Emitter, Listener, Manager,
 };
+use tauri_plugin_dialog::{DialogExt, FilePath};
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -19,6 +22,41 @@ fn greet(name: &str) -> String {
 #[tauri::command]
 fn unregister_shell_folder() -> Result<(), String> {
     shell_folder::unregister().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_working_folder(app: tauri::AppHandle) -> Result<String, String> {
+    Ok(shell_folder::runtime_target_folder(&app)
+        .display()
+        .to_string())
+}
+
+#[tauri::command]
+fn pick_working_folder(
+    app: tauri::AppHandle,
+    watch_state: tauri::State<'_, file_watcher::SharedWatchController>,
+) -> Result<Option<String>, String> {
+    let Some(folder_path) = app
+        .dialog()
+        .file()
+        .set_title("작업 폴더 선택")
+        .blocking_pick_folder()
+    else {
+        return Ok(None);
+    };
+
+    let folder_path = dialog_path_to_path_buf(folder_path)?;
+    let saved_path =
+        shell_folder::set_target_folder(&app, &folder_path).map_err(|e| e.to_string())?;
+
+    file_watcher::update_watch_path(app.clone(), watch_state.inner().clone(), saved_path.clone())?;
+
+    Ok(Some(saved_path.display().to_string()))
+}
+
+#[tauri::command]
+fn open_working_folder(app: tauri::AppHandle) -> Result<(), String> {
+    shell_folder::open_target_folder(&app).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -32,16 +70,19 @@ fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
-fn create_badge_icon(app: &tauri::AppHandle, mandatory: bool) -> Option<tauri::image::Image<'static>> {
+fn create_badge_icon(
+    app: &tauri::AppHandle,
+    mandatory: bool,
+) -> Option<tauri::image::Image<'static>> {
     let icon = app.default_window_icon()?;
     let w = icon.width();
     let h = icon.height();
     let mut rgba = icon.rgba().to_vec();
 
     let (cr, cg, cb) = if mandatory {
-        (220u8, 38, 38)    // 빨간색 (필수)
+        (220u8, 38, 38) // 빨간색 (필수)
     } else {
-        (245u8, 158, 11)   // 주황색 (선택)
+        (245u8, 158, 11) // 주황색 (선택)
     };
 
     // 우하단에 원 그리기 (아이콘의 1/4 크기)
@@ -74,23 +115,68 @@ fn show_window(app: &tauri::AppHandle) {
     }
 }
 
+fn configure_primary_window(app: &tauri::AppHandle) {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.set_skip_taskbar(false);
+            let _ = window.set_always_on_top(false);
+        }
+
+        show_window(app);
+    }
+}
+
+fn dialog_path_to_path_buf(path: FilePath) -> Result<PathBuf, String> {
+    match path {
+        FilePath::Path(path) => Ok(path),
+        FilePath::Url(url) => url
+            .to_file_path()
+            .map_err(|_| "선택한 폴더 경로를 해석할 수 없습니다.".to_string()),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_window(app);
         }))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![greet, unregister_shell_folder, install_update])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            unregister_shell_folder,
+            get_working_folder,
+            pick_working_folder,
+            open_working_folder,
+            install_update,
+            ipj_import::pick_import_folder,
+            ipj_import::analyze_import_folder,
+            ipj_import::start_import_upload,
+            ipj_import::get_import_state
+        ])
         .setup(|app| {
             // 공유 인증 상태
             let auth_state: local_server::SharedAuthState =
                 Arc::new(Mutex::new(local_server::AuthState::default()));
 
             // 공유 업데이트 정보
-            let update_info: Arc<Mutex<Option<updater::UpdateInfo>>> =
-                Arc::new(Mutex::new(None));
+            let update_info: Arc<Mutex<Option<updater::UpdateInfo>>> = Arc::new(Mutex::new(None));
+
+            // 공유 import 상태
+            let import_state: ipj_import::SharedImportState =
+                Arc::new(Mutex::new(ipj_import::ImportState::default()));
+
+            // 공유 파일 감시 상태
+            let watch_state: file_watcher::SharedWatchController =
+                Arc::new(Mutex::new(file_watcher::WatchController::default()));
+
+            app.manage(auth_state.clone());
+            app.manage(import_state.clone());
+            app.manage(watch_state.clone());
 
             // Localhost HTTP 서버 시작
             let port = local_server::start(app.handle().clone(), auth_state.clone());
@@ -115,11 +201,19 @@ pub fn run() {
                     eprintln!("Failed to register shell folder: {}", e);
                 }
             }
-            let _ = std::fs::create_dir_all(shell_folder::target_folder());
+            let target_folder = shell_folder::runtime_target_folder(app.handle());
+            let _ = std::fs::create_dir_all(&target_folder);
 
             // 파일 감시 시작
-            let watch_path = shell_folder::target_folder();
-            file_watcher::start_watching(app.handle().clone(), watch_path);
+            if let Err(e) = file_watcher::update_watch_path(
+                app.handle().clone(),
+                watch_state.clone(),
+                target_folder,
+            ) {
+                eprintln!("Failed to watch target folder: {}", e);
+            }
+
+            configure_primary_window(app.handle());
 
             // 트레이 메뉴
             let state = auth_state.lock().unwrap();
@@ -139,13 +233,19 @@ pub fn run() {
             )?;
             let sep0 = PredefinedMenuItem::separator(app)?;
             let is_logged_in = auth_state.lock().unwrap().logged_in;
-            let user =
-                MenuItem::with_id(app, "user", &display_name, !is_logged_in, None::<&str>)?;
+            let user = MenuItem::with_id(app, "user", &display_name, !is_logged_in, None::<&str>)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
             let open_folder =
                 MenuItem::with_id(app, "open_folder", "폴더 열기", true, None::<&str>)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
-            let autostart = CheckMenuItem::with_id(
+            // 업데이트 메뉴 (처음에는 비활성)
+            let update_menu =
+                MenuItem::with_id(app, "update", "업데이트 확인 중...", false, None::<&str>)?;
+            let sep3 = PredefinedMenuItem::separator(app)?;
+            let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
+
+            #[cfg(target_os = "windows")]
+            let autostart = tauri::menu::CheckMenuItem::with_id(
                 app,
                 "autostart",
                 "Windows 시작 시 자동 실행",
@@ -153,12 +253,11 @@ pub fn run() {
                 autostart::is_enabled(),
                 None::<&str>,
             )?;
-            let sep3 = PredefinedMenuItem::separator(app)?;
-            // 업데이트 메뉴 (처음에는 비활성)
-            let update_menu =
-                MenuItem::with_id(app, "update", "업데이트 확인 중...", false, None::<&str>)?;
+
+            #[cfg(target_os = "windows")]
             let sep4 = PredefinedMenuItem::separator(app)?;
-            let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
+
+            #[cfg(target_os = "windows")]
             let menu = Menu::with_items(
                 app,
                 &[
@@ -172,6 +271,22 @@ pub fn run() {
                     &sep3,
                     &update_menu,
                     &sep4,
+                    &quit,
+                ],
+            )?;
+
+            #[cfg(not(target_os = "windows"))]
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &app_title,
+                    &sep0,
+                    &user,
+                    &sep1,
+                    &open_folder,
+                    &sep2,
+                    &update_menu,
+                    &sep3,
                     &quit,
                 ],
             )?;
@@ -192,9 +307,7 @@ pub fn run() {
             let update_info_for_event = update_info.clone();
             let app_for_event = app.handle().clone();
             app.listen("update-available", move |event| {
-                if let Ok(info) =
-                    serde_json::from_str::<updater::UpdateInfo>(event.payload())
-                {
+                if let Ok(info) = serde_json::from_str::<updater::UpdateInfo>(event.payload()) {
                     let label = if info.mandatory {
                         format!("⚠ 필수 업데이트 (v{})", info.latest_version)
                     } else {
@@ -233,15 +346,18 @@ pub fn run() {
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "user" => {
-                        let _ =
-                            open::that("http://localhost:52847/auth/callback?code=mock_login");
+                        let _ = open::that("http://localhost:52847/auth/callback?code=mock_login");
                     }
                     "open_folder" => {
-                        let _ = std::process::Command::new("explorer")
-                            .arg(shell_folder::shell_uri())
-                            .spawn();
+                        if let Err(error) = shell_folder::open_target_folder(app) {
+                            eprintln!("Failed to open target folder: {}", error);
+                        }
                     }
                     "autostart" => {
+                        if !cfg!(target_os = "windows") {
+                            return;
+                        }
+
                         if let Err(e) = autostart::toggle() {
                             eprintln!("Failed to toggle autostart: {}", e);
                         }

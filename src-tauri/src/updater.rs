@@ -2,6 +2,7 @@ use std::time::Duration;
 use tauri::Emitter;
 use tauri_plugin_notification::NotificationExt;
 
+#[cfg(not(feature = "mock"))]
 const RELEASES_URL: &str = match option_env!("FABBIT_RELEASES_URL") {
     Some(v) => v,
     None => "https://releases.fabbit.io/latest.json",
