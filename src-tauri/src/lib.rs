@@ -196,10 +196,8 @@ pub fn run() {
                         .join("icon.ico")
                 });
 
-            if !shell_folder::is_registered() {
-                if let Err(e) = shell_folder::register(&icon_path.to_string_lossy()) {
-                    eprintln!("Failed to register shell folder: {}", e);
-                }
+            if let Err(e) = shell_folder::register(&icon_path.to_string_lossy()) {
+                eprintln!("Failed to register shell folder: {}", e);
             }
             let target_folder = shell_folder::runtime_target_folder(app.handle());
             let _ = std::fs::create_dir_all(&target_folder);
